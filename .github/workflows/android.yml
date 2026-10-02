@@ -10,16 +10,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+
       - name: Build debug APK
-        run: gradle :app:assembleDebug
-      - uses: actions/upload-artifact@v4
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --stacktrace 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VozIA-build-log
+          path: build.log
+
+      - name: Upload APK
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
         with:
           name: VozIA-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Mark build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
