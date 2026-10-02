@@ -11,12 +11,40 @@ import java.util.UUID
 
 class ApiClient(private val baseUrl: String) {
     data class Message(val role: String, val text: String)
+    data class Health(val ok: Boolean, val chatConfigured: Boolean, val voiceConfigured: Boolean)
+
+    companion object {
+        // Clave anon/pública de Supabase. No es una clave secreta.
+        private const val SUPABASE_ANON_KEY =
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvd2h5anNwZGZzdnZodGZ0dHRyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAxMjA0ODUsImV4cCI6MjEwNTY5NjQ4NX0.dh7xIVRXeaXyAgUHtsknlzSGodeieN43CuhG3v4HMao"
+    }
+
+    fun health(): Health {
+        val conn = (URL("${baseUrl.trimEnd('/')}/health").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 8_000
+            readTimeout = 12_000
+            applyAuth(this)
+        }
+        val body = readBody(conn)
+        requireOk(conn, body)
+        val json = JSONObject(body)
+        return Health(
+            ok = json.optBoolean("ok", false),
+            chatConfigured = json.optBoolean("chat_configured", false),
+            voiceConfigured = json.optBoolean("voice_configured", false)
+        )
+    }
 
     fun createVoice(name: String, sample: File, consent: Boolean): String {
         val boundary = "----VozIA${UUID.randomUUID()}"
         val conn = (URL("${baseUrl.trimEnd('/')}/voice-profile").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = 120_000
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 10_000
+            readTimeout = 120_000
             setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            applyAuth(this)
         }
         BufferedOutputStream(conn.outputStream).use { out ->
             fun textPart(key: String, value: String) {
@@ -32,7 +60,8 @@ class ApiClient(private val baseUrl: String) {
             sample.inputStream().use { it.copyTo(out) }
             out.write("\r\n--$boundary--\r\n".toByteArray())
         }
-        val body = readBody(conn); requireOk(conn, body)
+        val body = readBody(conn)
+        requireOk(conn, body)
         return JSONObject(body).getString("voice_id")
     }
 
@@ -42,7 +71,8 @@ class ApiClient(private val baseUrl: String) {
         val payload = JSONObject().put("message", message).put("history", arr)
         val conn = jsonConnection("${baseUrl.trimEnd('/')}/chat")
         conn.outputStream.use { it.write(payload.toString().toByteArray()) }
-        val body = readBody(conn); requireOk(conn, body)
+        val body = readBody(conn)
+        requireOk(conn, body)
         return JSONObject(body).getString("reply")
     }
 
@@ -50,22 +80,38 @@ class ApiClient(private val baseUrl: String) {
         val payload = JSONObject().put("text", text).put("voice_id", voiceId)
         val conn = jsonConnection("${baseUrl.trimEnd('/')}/speak", 120_000)
         conn.outputStream.use { it.write(payload.toString().toByteArray()) }
-        if (conn.responseCode !in 200..299) throw IllegalStateException(readBody(conn))
-        BufferedInputStream(conn.inputStream).use { input -> target.outputStream().use { input.copyTo(it) } }
+        val bodyCode = conn.responseCode
+        if (bodyCode !in 200..299) throw IllegalStateException(readBody(conn))
+        BufferedInputStream(conn.inputStream).use { input ->
+            target.outputStream().use { input.copyTo(it) }
+        }
         return target
     }
 
     private fun jsonConnection(url: String, timeout: Int = 60_000): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; doOutput = true; connectTimeout = 20_000; readTimeout = timeout
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 10_000
+            readTimeout = timeout
             setRequestProperty("Content-Type", "application/json")
+            applyAuth(this)
         }
+
+    private fun applyAuth(conn: HttpURLConnection) {
+        conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON_KEY")
+        conn.setRequestProperty("apikey", SUPABASE_ANON_KEY)
+    }
 
     private fun readBody(conn: HttpURLConnection): String {
         val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
         return stream?.bufferedReader()?.readText().orEmpty()
     }
+
     private fun requireOk(conn: HttpURLConnection, body: String) {
-        if (conn.responseCode !in 200..299) throw IllegalStateException("Error ${conn.responseCode}: $body")
+        if (conn.responseCode !in 200..299) {
+            val detail = try { JSONObject(body).optString("detail", body) } catch (_: Exception) { body }
+            throw IllegalStateException("Error ${conn.responseCode}: $detail")
+        }
     }
 }
