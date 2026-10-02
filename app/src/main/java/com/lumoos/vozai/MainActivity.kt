@@ -40,14 +40,22 @@ fun VozIAApp() {
     val recorder = remember { VoiceRecorder(context) }
     val player = remember { AudioPlayer() }
 
+    val defaultServer = "https://powhyjspdfsvvhtftttr.supabase.co/functions/v1/voz-ia"
+    val storedServer = prefs.getString("server_url", null)
+    var serverUrl by remember {
+        mutableStateOf(
+            if (storedServer.isNullOrBlank() || storedServer.contains("10.0.2.2")) defaultServer
+            else storedServer
+        )
+    }
+
     var tab by remember { mutableIntStateOf(0) }
-    var serverUrl by remember { mutableStateOf(prefs.getString("server_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000") }
     var voiceName by remember { mutableStateOf("Mi voz") }
     var consent by remember { mutableStateOf(false) }
     var recording by remember { mutableStateOf(false) }
     var sampleFile by remember { mutableStateOf<File?>(null) }
     var voiceId by remember { mutableStateOf(prefs.getString("voice_id", "") ?: "") }
-    var status by remember { mutableStateOf("Listo") }
+    var status by remember { mutableStateOf("Conectando con servidor...") }
 
     val messages = remember { mutableStateListOf<ApiClient.Message>() }
     var input by remember { mutableStateOf("") }
@@ -57,10 +65,28 @@ fun VozIAApp() {
     var handsFree by remember { mutableStateOf(false) }
     var pendingAutoSend by remember { mutableStateOf<String?>(null) }
 
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        status = if (granted) "Permiso concedido" else "Se requiere permiso de micrófono"
+    LaunchedEffect(Unit) {
+        prefs.edit().putString("server_url", serverUrl).apply()
+        try {
+            val h = withContext(Dispatchers.IO) { ApiClient(serverUrl).health() }
+            status = when {
+                !h.ok -> "Servidor no disponible"
+                !h.voiceConfigured && !h.chatConfigured -> "Servidor conectado · faltan claves de IA y voz"
+                !h.voiceConfigured -> "Servidor conectado · falta configurar voz"
+                !h.chatConfigured -> "Servidor conectado · falta configurar IA"
+                else -> "Servidor conectado"
+            }
+        } catch (e: Exception) {
+            status = "No se pudo conectar al servidor: ${e.message}"
+        }
     }
+
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        status = if (granted) "Permiso de micrófono concedido" else "Se requiere permiso de micrófono"
+    }
+
     fun hasMic() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
     fun ensureMic(): Boolean {
         if (hasMic()) return true
         permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -98,10 +124,16 @@ fun VozIAApp() {
     fun sendMessage(textValue: String, continueHandsFree: Boolean = handsFree) {
         val text = textValue.trim()
         if (text.isBlank() || busy) return
-        if (voiceId.isBlank()) { status = "Primero crea una voz"; return }
+        if (voiceId.isBlank()) { status = "Primero crea un perfil de voz"; return }
+
         val history = messages.toList()
         messages.add(ApiClient.Message("user", text))
-        input = ""; partialSpeech = ""; busy = true; speech.cancel(); status = "Pensando..."
+        input = ""
+        partialSpeech = ""
+        busy = true
+        speech.cancel()
+        status = "Pensando..."
+
         scope.launch {
             try {
                 val reply = withContext(Dispatchers.IO) { ApiClient(serverUrl).chat(text, history) }
@@ -139,10 +171,16 @@ fun VozIAApp() {
         }
     ) { pad ->
         Column(Modifier.padding(pad).padding(16.dp).fillMaxSize()) {
-            OutlinedTextField(serverUrl, {
-                serverUrl = it
-                prefs.edit().putString("server_url", it).apply()
-            }, label = { Text("Servidor backend") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = serverUrl,
+                onValueChange = {
+                    serverUrl = it
+                    prefs.edit().putString("server_url", it).apply()
+                },
+                label = { Text("Servidor backend") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
             Spacer(Modifier.height(6.dp))
             Text("Estado: $status", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(12.dp))
@@ -150,54 +188,116 @@ fun VozIAApp() {
             if (tab == 0) {
                 Text("Crear perfil de voz", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(voiceName, { voiceName = it }, label = { Text("Nombre de la voz") }, modifier = Modifier.fillMaxWidth())
+
+                OutlinedTextField(
+                    voiceName,
+                    { voiceName = it },
+                    label = { Text("Nombre de la voz") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
                 Spacer(Modifier.height(8.dp))
                 Button({
                     if (!ensureMic()) return@Button
                     try {
                         if (!recording) {
-                            sampleFile = recorder.start(); recording = true; status = "Grabando..."
+                            sampleFile = recorder.start()
+                            recording = true
+                            status = "Grabando muestra..."
                         } else {
-                            sampleFile = recorder.stop(); recording = false; status = "Muestra guardada"
+                            sampleFile = recorder.stop()
+                            recording = false
+                            val kb = (sampleFile?.length() ?: 0L) / 1024
+                            status = "Muestra guardada · ${kb} KB"
                         }
                     } catch (e: Exception) {
-                        recording = false; status = "Error de grabación: ${e.message}"
+                        recording = false
+                        status = "Error de grabación: ${e.message}"
                     }
                 }, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
                     Text(if (recording) "Detener grabación" else "Grabar muestra")
                 }
+
+                if (sampleFile != null && !recording) {
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton({
+                        sampleFile?.let {
+                            status = "Reproduciendo muestra..."
+                            player.play(it) { status = "Muestra lista" }
+                        }
+                    }, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
+                        Text("Escuchar muestra")
+                    }
+                }
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(consent, { consent = it })
                     Text("Confirmo que esta voz es mía o tengo permiso explícito.")
                 }
+
                 Button({
-                    val sample = sampleFile ?: run { status = "Primero graba una muestra"; return@Button }
-                    if (!consent) { status = "Confirma la autorización"; return@Button }
-                    busy = true; status = "Creando perfil..."
+                    val sample = sampleFile ?: run {
+                        status = "Primero graba y detén una muestra"
+                        return@Button
+                    }
+                    if (!consent) {
+                        status = "Confirma la autorización"
+                        return@Button
+                    }
+                    busy = true
+                    status = "Subiendo muestra y creando perfil..."
                     scope.launch {
                         try {
-                            val id = withContext(Dispatchers.IO) { ApiClient(serverUrl).createVoice(voiceName, sample, consent) }
+                            val id = withContext(Dispatchers.IO) {
+                                ApiClient(serverUrl).createVoice(voiceName, sample, consent)
+                            }
                             voiceId = id
                             prefs.edit().putString("voice_id", id).apply()
-                            status = "Voz lista"
-                        } catch (e: Exception) { status = "Error: ${e.message}" }
-                        finally { busy = false }
+                            status = "✓ Perfil de voz creado"
+                        } catch (e: Exception) {
+                            status = "No se pudo crear: ${e.message}"
+                        } finally {
+                            busy = false
+                        }
                     }
-                }, modifier = Modifier.fillMaxWidth(), enabled = sampleFile != null && consent && !busy) {
-                    Text("Crear perfil de voz")
+                }, modifier = Modifier.fillMaxWidth(), enabled = sampleFile != null && consent && !busy && !recording) {
+                    Text(if (busy) "Creando..." else "Crear perfil de voz")
                 }
-                if (voiceId.isNotBlank()) Text("✓ Perfil configurado")
+
+                if (voiceId.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("✓ Perfil configurado. Ya puedes ir a Conversación.")
+                }
             } else {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text("Conversación", style = MaterialTheme.typography.titleLarge)
-                    Switch(handsFree, {
-                        if (it && voiceId.isNotBlank()) { handsFree = true; startListening() }
-                        else { handsFree = false; speech.cancel(); player.stop() }
-                    }, enabled = voiceId.isNotBlank() && !busy)
+                    Switch(
+                        checked = handsFree,
+                        onCheckedChange = {
+                            if (it && voiceId.isNotBlank()) {
+                                handsFree = true
+                                startListening()
+                            } else {
+                                handsFree = false
+                                speech.cancel()
+                                player.stop()
+                            }
+                        },
+                        enabled = voiceId.isNotBlank() && !busy
+                    )
                 }
+
                 Text(if (handsFree) "Modo manos libres activo" else "Puedes escribir o usar el micrófono")
                 Spacer(Modifier.height(8.dp))
-                LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+
+                LazyColumn(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     items(messages) { msg ->
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(12.dp)) {
@@ -207,16 +307,32 @@ fun VozIAApp() {
                         }
                     }
                 }
+
                 if (partialSpeech.isNotBlank()) Text("🎤 $partialSpeech")
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(input, { input = it }, label = { Text("Escribe o dicta") }, modifier = Modifier.weight(1f), enabled = !busy && !handsFree)
+                    OutlinedTextField(
+                        input,
+                        { input = it },
+                        label = { Text("Escribe o dicta") },
+                        modifier = Modifier.weight(1f),
+                        enabled = !busy && !handsFree
+                    )
                     Spacer(Modifier.width(8.dp))
-                    Button({ if (listening) speech.stopListening() else startListening() }, enabled = !busy && !handsFree) {
+                    Button(
+                        { if (listening) speech.stopListening() else startListening() },
+                        enabled = !busy && !handsFree
+                    ) {
                         Text(if (listening) "⏹" else "🎤")
                     }
                 }
+
                 Spacer(Modifier.height(8.dp))
-                Button({ sendMessage(input) }, enabled = input.isNotBlank() && voiceId.isNotBlank() && !busy && !handsFree, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    { sendMessage(input) },
+                    enabled = input.isNotBlank() && voiceId.isNotBlank() && !busy && !handsFree,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Text(if (busy) "Procesando..." else "Enviar y escuchar")
                 }
             }
