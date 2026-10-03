@@ -64,6 +64,7 @@ fun VozIAApp() {
 
     var voiceName by remember { mutableStateOf("Mi voz") }
     var consent by remember { mutableStateOf(false) }
+    var cleanAudio by remember { mutableStateOf(true) }
     var recording by remember { mutableStateOf(false) }
     var sampleFile by remember { mutableStateOf<File?>(null) }
     var voiceId by remember { mutableStateOf(prefs.getString("voice_id", "") ?: "") }
@@ -508,6 +509,37 @@ fun VozIAApp() {
                         Text("Confirmo que esta voz es mía o tengo permiso explícito.")
                     }
 
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Limpieza IA de voz", style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        "Reduce ruido, ambiente y reverberación antes de clonar.",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                                Switch(
+                                    checked = cleanAudio,
+                                    onCheckedChange = { cleanAudio = it },
+                                    enabled = !busy
+                                )
+                            }
+                            if (cleanAudio) {
+                                Text(
+                                    "Recomendado para una voz más limpia y fiel.",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
                     Button(
                         onClick = {
                             val sample = sampleFile ?: run {
@@ -524,7 +556,7 @@ fun VozIAApp() {
                             }
 
                             busy = true
-                            status = "Creando y guardando perfil..."
+                            status = if (cleanAudio) "Limpiando audio con IA y creando perfil..." else "Creando y guardando perfil..."
                             scope.launch {
                                 try {
                                     val profile = withContext(Dispatchers.IO) {
@@ -532,7 +564,8 @@ fun VozIAApp() {
                                             voiceName.trim(),
                                             sample,
                                             consent,
-                                            vaultId
+                                            vaultId,
+                                            cleanAudio
                                         )
                                     }
                                     profiles.add(0, profile)
@@ -540,7 +573,7 @@ fun VozIAApp() {
                                     voiceName = "Mi voz"
                                     consent = false
                                     sampleFile = null
-                                    status = "✓ Perfil guardado en Mis voces"
+                                    status = if (cleanAudio) "✓ Perfil limpio guardado en Mis voces" else "✓ Perfil guardado en Mis voces"
                                 } catch (e: Exception) {
                                     status = "No se pudo crear: ${e.message}"
                                 } finally {
