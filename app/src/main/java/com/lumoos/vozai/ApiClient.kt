@@ -41,7 +41,7 @@ class ApiClient(private val baseUrl: String) {
         )
     }
 
-    fun createVoice(name: String, sample: File, consent: Boolean, vaultId: String): VoiceProfile {
+    fun createVoice(name: String, sample: File, consent: Boolean, vaultId: String, cleanAudio: Boolean = true): VoiceProfile {
         val boundary = "----VozIA${UUID.randomUUID()}"
         val conn = (URL("${baseUrl.trimEnd('/')}/voice-profile").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -59,6 +59,7 @@ class ApiClient(private val baseUrl: String) {
             }
             textPart("name", name)
             textPart("consent", consent.toString())
+            textPart("clean_audio", cleanAudio.toString())
             textPart("vault_id", vaultId)
             out.write("--$boundary\r\n".toByteArray())
             out.write("Content-Disposition: form-data; name=\"file\"; filename=\"${sample.name}\"\r\n".toByteArray())
