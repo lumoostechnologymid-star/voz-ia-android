@@ -12,16 +12,20 @@ class VoiceRecorder(private val context: Context) {
         val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
         val r = if (android.os.Build.VERSION.SDK_INT >= 31) MediaRecorder(context)
         else @Suppress("DEPRECATION") MediaRecorder()
+
         r.apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
+            // VOICE_RECOGNITION suele aplicar una ruta de captura más limpia para voz
+            // y reduce procesamiento que puede introducir ambiente/reverberación.
+            setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setAudioEncodingBitRate(128_000)
+            setAudioEncodingBitRate(192_000)
             setAudioSamplingRate(44_100)
             setOutputFile(file.absolutePath)
             prepare()
             start()
         }
+
         recorder = r
         currentFile = file
         return file
